@@ -1,0 +1,8 @@
+Chatty:
+    module: chatty
+    class: Chatty
+    username: USERNAME_HOME-ASSISTANT@XMPP-SERVER
+    password: secret
+    recipients:
+      - YOUR_PERSONAL_ACCOUNT@XMPP-SERVER
+
