@@ -119,7 +119,36 @@ class MyCommands:
         self.chatty = chatty
 
         chatty.register_command("help", self.help)
+        chatty.register_command("heim", self.heim)
+        chatty.register_command("weg", self.weg)
 
     def help(self, message):
-        return "I'm alive. But I can't really do anything, yet."
+        #return "I'm alive. But I can't really do anything, yet."
+        return "Hallo, momentan gibt es nur die Commands: 'heim' und 'weg'"
 
+    def _set_temps(self, thermostats):
+        for x in thermostats:
+            self.chatty.log("Setting {} to {}".format(x[0], x[1]))
+            self.chatty.call_service("climate/set_temperature", entity_id=x[0], temperature=str(x[1]))
+
+    def heim(self, message):
+        heizungen = [
+                        ("climate.heizung_wohnzimmer_mode", 22),
+                        ("climate.heizung_kuche_mode", 21),
+                        ("climate.heizung_bad_mode", 21)
+                    ]
+
+        self._set_temps(heizungen)
+
+        return "Wilkommen daheim. Heizungen sind bereit."
+
+    def weg(self, message):
+        heizungen = [
+                        ("climate.heizung_wohnzimmer_mode", 18),
+                        ("climate.heizung_kuche_mode", 18),
+                        ("climate.heizung_bad_mode", 18)
+                    ]
+
+        self._set_temps(heizungen)
+
+        return "Tschüss. Heizungen runter gedreht."
