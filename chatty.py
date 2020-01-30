@@ -5,10 +5,20 @@ import appdaemon.plugins.hass.hassapi as hass
 import slixmpp
 
 class Chatty(hass.Hass):
+    class Command:
+        def __init__(self, name, callback):
+            self.name = name
+            self.callback = callback
+
+    def register_command(self, name, callback):
+        self.commands.append(Chatty.Command(name, callback))
+
     async def initialize(self):
         username = self.args["username"]
         password = self.args["password"]
         self.recipients = self.args["recipients"] # note, this is expected to be an array!
+
+        self.commands = list()
 
         self.start_xmpp(username, password)
 
@@ -16,6 +26,9 @@ class Chatty(hass.Hass):
         self.listen_event(self.on_notify_event, "NOTIFY_JABBER")
 
         self.log("Chatty started.")
+
+        # register commands
+        self.mycommands = MyCommands(self)
 
     def start_xmpp(self, username, password):
         self.log("Starting chatty with username: {}".format(username))
@@ -54,6 +67,22 @@ class Chatty(hass.Hass):
         sender = msg["from"]
         self.log("Incoming: '{}', from '{}".format(message, sender))
 
+        # all commands are case insensitive
+        message = message.lower()
+
+        # find command, triggered by the incoming message, and run it
+        command = Chatty.Command("", None)
+        for x in self.commands:
+            if message.startswith(x.name) and len(x.name) > len(command.name):
+                command = x
+
+        if command.name != "":
+            self.log("Running command: {}".format(command.name))
+            return command.callback(message)
+        else:
+            self.log("Command not found.")
+            return "Sorry, but... what?"
+
         # return an answer to the sender (optional)
         return None
 
@@ -80,3 +109,17 @@ class XMPPconnector(slixmpp.ClientXMPP):
 
             if answer:
                 msg.reply(answer).send()
+
+
+class MyCommands:
+    def __init__(self, chatty):
+        """
+        extend this class with your own commands
+        """
+        self.chatty = chatty
+
+        chatty.register_command("help", self.help)
+
+    def help(self, message):
+        return "I'm alive. But I can't really do anything, yet."
+
