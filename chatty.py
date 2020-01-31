@@ -86,6 +86,16 @@ class Chatty(hass.Hass):
         # return an answer to the sender (optional)
         return None
 
+    async def terminate(self):
+        self.log("Terminating XMPP session")
+
+        self.xmpp.disconnect()
+
+        await self.xmpp.disconnected
+        del self.xmpp
+
+        self.log("XMPP session terminated.")
+
     
 class XMPPconnector(slixmpp.ClientXMPP):
     def __init__(self, jid, password, message_handler):
