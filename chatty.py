@@ -78,7 +78,7 @@ class Chatty(hass.Hass):
 
         if command.name != "":
             self.log("Running command: {}".format(command.name))
-            return command.callback(message)
+            return await command.callback(message)
         else:
             self.log("Command not found.")
             return "Sorry, but... what?"
@@ -89,36 +89,73 @@ class Chatty(hass.Hass):
     async def terminate(self):
         self.log("Terminating XMPP session")
 
+        self.xmpp.do_reconnections = False
         self.xmpp.disconnect()
 
         await self.xmpp.disconnected
         del self.xmpp
-
+                
         self.log("XMPP session terminated.")
+
 
     
 class XMPPconnector(slixmpp.ClientXMPP):
     def __init__(self, jid, password, message_handler):
         slixmpp.ClientXMPP.__init__(self, jid, password)
         self.message_handler = message_handler
+        self.log = message_handler.log
+
+        self.do_reconnections = True
+        self.is_first_connection = True
 
         self.add_event_handler("session_start", self.start)
-        self.add_event_handler("message", self.message)
+        self.add_event_handler("message", self.on_message)
+        self.add_event_handler("disconnected", self.on_disconnect)
+        self.add_event_handler("connection_failed", self.on_connection_failure)
 
     def start(self, event):
+        self.log("Connection established.")
         self.send_presence()
         self.get_roster()
 
-    def message(self, msg):
+        if self.is_first_connection:
+            self.is_first_connection = False
+        else:
+            self.message_handler._on_notify("Reconnected after connection loss.")
+
+    def on_disconnect(self, event):
+        if self.do_reconnections:
+            self.connect()
+
+    def on_connection_failure(self, event):
+        self.log("XMPP connection failed. Try to reconnect in 5min.")
+        self.schedule("Reconnect after connection failure", 60*5, self.on_disconnect, event)
+
+    def send_message_to(self, recipient, message):
+        try:
+            self.send_message(mto=recipient, mbody=message, mtype='chat')
+        except slixmpp.xmlstream.xmlstream.NotConnectedError:
+            self.log("Message NOT SENT, not connected.")
+            ## TODO enqueue message for sending after reconnect
+        except:
+            self.log("Message NOT SENT, due to unexpected error!")
+
+    async def on_message(self, msg):
         """
         called by slixmpp on incoming XMPP messages
         """
 
         if msg['type'] in ('chat', 'normal'):
-            answer = self.message_handler.on_incoming_message(msg)
+            answer = await self.message_handler.on_incoming_message(msg)
 
             if answer:
-                msg.reply(answer).send()
+                try:
+                    msg.reply(answer).send()
+                except slixmpp.xmlstream.xmlstream.NotConnectedError:
+                    self.log("Reply NOT SENT, not connected.")
+                    ## TODO enqueue message for sending after reconnect
+                except:
+                    self.log("Reply NOT SENT, due to unexpected error!")
 
 
 class MyCommands:
@@ -132,7 +169,7 @@ class MyCommands:
         chatty.register_command("heim", self.heim)
         chatty.register_command("weg", self.weg)
 
-    def help(self, message):
+    async def help(self, message):
         #return "I'm alive. But I can't really do anything, yet."
         return "Hallo, momentan gibt es nur die Commands: 'heim' und 'weg'"
 
