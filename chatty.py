@@ -60,9 +60,9 @@ class Chatty(hass.Hass):
         """
         for recipient in self.recipients:
             self.log("Sending '{}' to '{}'".format(message, recipient))
-            self.xmpp.send_message(mto=recipient, mbody=message, mtype='chat')
+            self.xmpp.send_message_to(recipient, message)
 
-    def on_incoming_message(self, msg):
+    async def on_incoming_message(self, msg):
         message = msg["body"]
         sender = msg["from"]
         self.log("Incoming: '{}', from '{}".format(message, sender))
@@ -165,37 +165,149 @@ class MyCommands:
         """
         self.chatty = chatty
 
+        self.rooms = ("küche", "wohnzimmer", "bad")
+        self.room_to_heater = { "küche": "climate.heizung_kuche_mode",
+                                "wohnzimmer": "climate.heizung_wohnzimmer_mode",
+                                "bad": "climate.heizung_bad_mode"}
+
         chatty.register_command("help", self.help)
         chatty.register_command("heim", self.heim)
         chatty.register_command("weg", self.weg)
+        chatty.register_command("heizung", self.heizung)
+        chatty.register_command("h", self.heizung)
+        chatty.register_command("auto", self.car)
 
     async def help(self, message):
         #return "I'm alive. But I can't really do anything, yet."
-        return "Hallo, momentan gibt es nur die Commands: 'heim' und 'weg'"
+        return ("heim -> Heizungen hoch\n"
+                "weg -> Heizungen runter\n"
+                "h|heizung ZIMMER TEMP -> Heizung in ZIMMER auf TEMP\n"
+                "auto -> Auto vorheizen")
+
+    def _find_room(self, room):
+        room = room.strip()
+        for x in self.rooms:
+            if x.startswith(room):
+                return x
+
+        return None
+
+    def _parse_temp(self, temp):
+        temp = temp.strip()
+        if temp in ("an", "on"):
+            return "on"
+        if temp in ("aus", "off"):
+            return "off"
+
+        return temp.strip().replace(",", ".")
 
     def _set_temps(self, thermostats):
         for x in thermostats:
-            self.chatty.log("Setting {} to {}".format(x[0], x[1]))
-            self.chatty.call_service("climate/set_temperature", entity_id=x[0], temperature=str(x[1]))
+            room = x[0]
+            heater_entity = self.room_to_heater[room]
+            temp = x[1]
+            self.chatty.log("Setting {} ({}) to {}".format(room, heater_entity, temp))
 
-    def heim(self, message):
+            if temp == "on":
+                self.chatty.call_service("climate/turn_on", entity_id=heater_entity)
+            elif temp == "off":
+                self.chatty.call_service("climate/turn_off", entity_id=heater_entity)
+            else:
+                self.chatty.call_service("climate/set_temperature", entity_id=heater_entity, temperature=str(x[1]))
+
+    async def _get_heater_setpoint(self, entity):
+        return float(await self.chatty.get_state(entity_id=entity, attribute="temperature"))
+
+    async def _get_is_temperature(self, entity):
+        return float(await self.chatty.get_state(entity_id=entity, attribute="current_temperature"))
+        
+    async def _is_heating_on(self, entity):
+        return False if await self.chatty.get_state(entity_id=entity) == "off" else True
+
+    async def _query_heaters(self, rooms):
+        results = []
+
+        for room in rooms:
+            heater = self.room_to_heater[room]
+            if heater:
+                values = [room]
+                is_on = await self._is_heating_on(heater)
+                if is_on:
+                    values.append(await self._get_heater_setpoint(heater))
+                else:
+                    values.append("off")
+                values.append(await self._get_is_temperature(heater))
+
+                results.append(values)
+
+        output = []
+        for x in results:
+            unit = "°C" if x[1] != "off" else ""
+            output.append("{} [ {}{} | {}°C ]".format(x[0].capitalize(), x[1], unit, x[2]))
+
+        return "\n".join(output)
+
+
+    async def heim(self, message):
         heizungen = [
-                        ("climate.heizung_wohnzimmer_mode", 22),
-                        ("climate.heizung_kuche_mode", 21),
-                        ("climate.heizung_bad_mode", 21)
+                        ("wohnzimmer", 22),
+                        ("küche", 21),
+                        ("bad", 21)
                     ]
 
         self._set_temps(heizungen)
 
         return "Wilkommen daheim. Heizungen sind bereit."
 
-    def weg(self, message):
+    async def weg(self, message):
+        # heating down
         heizungen = [
-                        ("climate.heizung_wohnzimmer_mode", 18),
-                        ("climate.heizung_kuche_mode", 18),
-                        ("climate.heizung_bad_mode", 18)
+                        ("wohnzimmer", 18),
+                        ("küche", 18),
+                        ("bad", 18)
                     ]
 
         self._set_temps(heizungen)
 
-        return "Tschüss. Heizungen runter gedreht."
+
+        # check windows
+
+        w_bad = await self.chatty.get_state("binary_sensor.neo_coolcam_door_window_detector_sensor")
+        w_wc = await self.chatty.get_state("binary_sensor.window_wc_virtual")
+        w_mario = await self.chatty.get_state("binary_sensor.window_mario1")
+
+        # warn if a window is left open
+        if w_bad == "on" or w_mario == "on" or w_wc == "on":
+            answer = "Achtung, Fenster noch offen! Bad: {}, WC: {}, Mario: {}".format(w_bad, w_wc, w_mario)
+            answer += "\nHeizungen sind schonmal runter."
+            return answer
+
+        # everything is fine, goodby.
+        return "Tschüss. Heizungen runter gedreht. Fenster sind zu."
+
+    async def heizung(self, message):
+        try:
+            parts = message.strip().split(" ")
+
+            # query all heaters
+            if len(parts) == 1:
+                return await self._query_heaters(self.rooms)
+
+            room = self._find_room(parts[1])
+            
+            # query given heater
+            if len(parts) == 2:
+                return await self._query_heaters([room])
+            
+            # set given heater to new temp
+            temp = self._parse_temp(parts[2])
+            self._set_temps([(room, temp)])
+
+            return "Setze {} auf {}{}".format(room, temp, "°C" if temp not in ("on", "off") else "")
+        except:
+            return "Sorry, I can't do that ..."
+
+    async def car(self, message):
+        self.chatty.call_service("switch/turn_on", entity_id="switch.leaf1youp_climate_control")
+        return "Auto vorheizen (hoffentlich) gestartet."
+
